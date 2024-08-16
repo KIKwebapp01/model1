@@ -24,7 +24,7 @@ def read_data():
         ('データをアップロードする', 'サンプルデータを読み込む'), horizontal=True
     )
     if input_mode == 'データをアップロードする':
-        input_file = st.file_uploader("Choose a file")
+        input_file = st.file_uploader("Excelファイルをドラッグ＆ドロップ，または[Browse files]から選択してください", type=['xlsx'])
         if input_file is not None:
             df = pd.read_excel(input_file, index_col='ID')
             df['納期'] = df['納期'].dt.date
