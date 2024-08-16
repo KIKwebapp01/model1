@@ -16,7 +16,7 @@ def read_data():
 
     st.markdown(
         """
-        #### スケジュールで使用するデータを読み込みます
+        #### スケジュールで使用するExcelデータを読み込みます
         """
     )
     input_mode = st.radio(
@@ -37,7 +37,7 @@ def read_data():
 
         # カレントフォルダ内のsampledataフォルダからExcelファイル一覧を取得
         sampledata_folder = "sampledata"
-        file_list = [f for f in os.listdir(sampledata_folder) if f.lower().endswith(".xlsx")]
+        file_list = sorted([f for f in os.listdir(sampledata_folder) if f.lower().endswith(".xlsx")])
 
         # ファイル選択用の選択ボックスを表示
         input_file = st.selectbox("Excelファイルを選択してください", file_list)

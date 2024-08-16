@@ -281,6 +281,7 @@ def output_schedule(df, result):
         st.plotly_chart(fig, theme=None)  # theme=None: デザインをstreamlit版にしない
 
     # ガントチャート描画
+    st.write('最適なスケジュールを立案しました．')
     draw_schedule(result)
 
     # # 作成した仕事の表示
