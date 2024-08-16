@@ -1,6 +1,1 @@
-numpy
 streamlit
-mip
-openpyxl
-pandas
-plotly
