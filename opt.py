@@ -1,5 +1,4 @@
 from mip import *
-from openpyxl import load_workbook
 from datetime import datetime, timedelta
 import streamlit as st
 import plotly.express as px
@@ -7,26 +6,15 @@ import pandas as pd
 
 TT = [0, 210, 260, 420, 430, 530]  # 各時刻．AM開始，AM終了，PM1開始，PM1終了，PM2開始，PM2終了
 T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))  # 各時間．AM，昼休み，PM1，PM休み，PM2
-START_TIME = '8:30'
 
 
 ### 前準備
-def preparation(df):
-    global TT, T, START_TIME
-
-    ws = load_workbook("settings.xlsx").active
-    for i in range(6):
-        TT[i] = ws.cell(row=1, column=i + 2).value
+def preparation():
+    global TT, T
+    tt = st.session_state.tt['時刻']
+    today = datetime.now().date()
+    TT = [(datetime.combine(today, tt[i]) - datetime.combine(today, tt[0])).seconds // 60 for i in range(6)]
     T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))
-    START_TIME = ws.cell(row=2, column=2).value
-
-    # DataFrameの調整
-    d = df.copy()
-    d.drop(['大隅前段取', '大隅加工'], axis=1, inplace=True)  # 不要な列を削除
-    d.dropna(subset='自動前段取', inplace=True)  # 自動前段取りに数値が入力済みの行だけ抽出
-    d['納期'] = pd.to_datetime(d['納期'])
-    d['納期'] = d['納期'].dt.date
-    return d
 
 
 ##最適化
@@ -125,8 +113,9 @@ def solve_model1(df):
 # 時間経過後の時刻を返す関数
 def add_minutes_to_datetime(minute_to_add):
     # 指定された日時をdatetimeオブジェクトに変換
-    now = datetime.now()
-    dt = pd.to_datetime(f"{now.year}-{now.month}-{now.day}-{START_TIME}", format='%Y-%m-%d-%H:%M')
+    today = datetime.now().date()
+    dt = datetime.combine(today, st.session_state.tt['時刻'][0])
+    # dt = pd.to_datetime(f"{now.year}-{now.month}-{now.day}-{START_TIME}", format='%Y-%m-%d-%H:%M')
     # 指定された分の時間を加算
     return dt + timedelta(minutes=float(minute_to_add))
 
@@ -221,13 +210,12 @@ def construct_schedule(df):
             for _ in range(row.セット数):
                 write_job(row.自動加工 / row.セット数, 'After', order)
             order += 1
-    return result
+    return pd.DataFrame(result)
 
 
-def output_schedule(df, result):
+def output_schedule(df_opt, df_schedule):
     ##ガントチャートの描画関数
     def draw_schedule(data):
-        # result = {"仕事名":[], "仕事ID":[],"開始時刻":[],"終了時刻":[],"順番":[],"前後":[]}
         color_scale = {
             "Before": "rgb(255,153,178)",  # 前段取の色を赤に設定
             "After": "rgb(153,229,255)"  # 加工の色を青に設定
@@ -282,7 +270,7 @@ def output_schedule(df, result):
 
     # ガントチャート描画
     st.write('最適なスケジュールを立案しました．')
-    draw_schedule(result)
+    draw_schedule(df_schedule)
 
     # # 作成した仕事の表示
     # d = df.query('x + y + z > 0')
@@ -295,7 +283,7 @@ def output_schedule(df, result):
     # print(d.loc[:, :'セット数'])
 
     # 出力用DataFrameの作成
-    df_out = pd.DataFrame(result)
+    df_out = df_schedule.copy()
     df_out.drop(columns=['仕事名', '順番', '前後', '優先'], inplace=True)
     df_min = df_out.groupby('ID')['開始時刻'].min()
     df_max = df_out.groupby('ID')['終了時刻'].max()
@@ -303,24 +291,20 @@ def output_schedule(df, result):
     df_out.columns = ['開始時刻', '終了時刻']
     df_out['開始時刻'] = df_out['開始時刻'].apply(lambda x: x.strftime('%H:%M'))
     df_out['終了時刻'] = df_out['終了時刻'].apply(lambda x: x.strftime('%H:%M'))
-    df_out = pd.merge(df, df_out, on='ID', how='left')
+    df_out = pd.merge(df_opt, df_out, on='ID', how='left')
     df_out.drop(columns=['x', 'v', 'y', 'w', 'z'], inplace=True)
-    print(df_out)
-
     return df_out
 
 
 def execute_optimization(df):
     # 初期設定
-    df_prep = preparation(df)
+    preparation()
 
     # 最適化の実行
-    df_sol = solve_model1(df_prep)
+    if (df_opt := solve_model1(df)) is None:
+        return None, None
 
     # 最適化の結果に基づいたスケジュールの立案
-    result = construct_schedule(df_sol)
+    df_schedule = construct_schedule(df_opt)
 
-    # 結果の出力
-    df_out = output_schedule(df_sol, result)
-
-    return df_out
+    return df_opt, df_schedule
