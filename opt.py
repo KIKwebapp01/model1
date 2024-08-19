@@ -4,15 +4,17 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
+# 時間・時刻．以下の内容はサンプル．実際には，関数 preparation で設定
 TT = [0, 210, 260, 420, 430, 530]  # 各時刻．AM開始，AM終了，PM1開始，PM1終了，PM2開始，PM2終了
 T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))  # 各時間．AM，昼休み，PM1，PM休み，PM2
 
 
 ### 前準備
-def preparation():
+def preparation(start=None):
     global TT, T
     tt = st.session_state.tt['時刻']
     today = datetime.now().date()
+    # TT[0]=0とした，分単位時刻
     TT = [(datetime.combine(today, tt[i]) - datetime.combine(today, tt[0])).seconds // 60 for i in range(6)]
     T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))
 
@@ -140,9 +142,6 @@ def construct_schedule(df):
             result["優先"].append('当日')
         else:
             result["優先"].append('　　')
-
-    print("作成仕事数：", (df['x'] + df['y'] + df['z']).sum())
-    print("作成数量　：", ((df['x'] + df['y'] + df['z']) * df['セット数']).sum())
 
     #仕事一覧とその仕事の開始時刻、終了時刻
     result = {"仕事名": [], "ID": [], "開始時刻": [], "終了時刻": [], "順番": [], "前後": [], "優先": []}

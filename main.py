@@ -153,7 +153,7 @@ def change_settings():
         for i in range(3):
             with col[i]:
                 for j in range(2):
-                    st.session_state.tt['時刻'][2*i+j] = st.time_input(labels[2*i+j], st.session_state.tt['時刻'][2*i+j], step=60)
+                    st.session_state.tt.loc[2*i+j, '時刻'] = st.time_input(labels[2*i+j], st.session_state.tt.loc[2*i+j, '時刻'], step=60)
     st.dataframe(st.session_state.tt)
 
 
