@@ -131,10 +131,11 @@ def make_schedule():
         st.markdown("  ")  # 空行
         for i in range(2):
             # モデル1の結果の出力
-            num_comp = (df_opts[i]['x'] + df_opts[i]['y'] + df_opts[i]['z']).sum()
-            num_set = ((df_opts[i]['x'] + df_opts[i]['y'] + df_opts[i]['z']) * df_opts[i]['セット数']).sum()
+            df_opt = st.session_state.df_opts[i]
+            num_comp = (df_opt['x'] + df_opt['y'] + df_opt['z']).sum()
+            num_set = ((df_opt['x'] + df_opt['y'] + df_opt['z']) * df_opt['セット数']).sum()
             st.markdown("##### " + titles[i] + '\u3000' * 5 + str(num_comp) + "作業，" + str(num_set) + "セット")
-            df_outs[i] = output_schedule(st.session_state.df_opts[i], st.session_state.df_schedules[i])
+            df_outs[i] = output_schedule(df_opt, st.session_state.df_schedules[i])
             st.dataframe(df_outs[i])
             df_merges[i] = pd.merge(st.session_state.df_data, df_outs[i][['開始時刻', '終了時刻']], on='ID', how='left')
             st.markdown("  ")       # 空行
