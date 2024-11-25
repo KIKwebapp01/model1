@@ -4,17 +4,15 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
-# 時間・時刻．以下の内容はサンプル．実際には，関数 preparation で設定
 TT = [0, 210, 260, 420, 430, 530]  # 各時刻．AM開始，AM終了，PM1開始，PM1終了，PM2開始，PM2終了
 T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))  # 各時間．AM，昼休み，PM1，PM休み，PM2
 
 
 ### 前準備
-def preparation(start=None):
+def preparation():
     global TT, T
     tt = st.session_state.tt['時刻']
     today = datetime.now().date()
-    # TT[0]=0とした，分単位時刻
     TT = [(datetime.combine(today, tt[i]) - datetime.combine(today, tt[0])).seconds // 60 for i in range(6)]
     T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))
 
@@ -111,6 +109,9 @@ def solve_model1(df):
         # print('最適解が求まりませんでした。')
         return None
 
+def solve_model2(df):
+    return solve_model1(df)
+
 
 # 時間経過後の時刻を返す関数
 def add_minutes_to_datetime(minute_to_add):
@@ -142,6 +143,9 @@ def construct_schedule(df):
             result["優先"].append('当日')
         else:
             result["優先"].append('　　')
+
+    print("作成仕事数：", (df['x'] + df['y'] + df['z']).sum())
+    print("作成数量　：", ((df['x'] + df['y'] + df['z']) * df['セット数']).sum())
 
     #仕事一覧とその仕事の開始時刻、終了時刻
     result = {"仕事名": [], "ID": [], "開始時刻": [], "終了時刻": [], "順番": [], "前後": [], "優先": []}
@@ -268,7 +272,6 @@ def output_schedule(df_opt, df_schedule):
         st.plotly_chart(fig, theme=None)  # theme=None: デザインをstreamlit版にしない
 
     # ガントチャート描画
-    st.write('最適なスケジュールを立案しました．')
     draw_schedule(df_schedule)
 
     # # 作成した仕事の表示
@@ -300,10 +303,11 @@ def execute_optimization(df):
     preparation()
 
     # 最適化の実行
-    if (df_opt := solve_model1(df)) is None:
-        return None, None
+    df_opts = [solve_model1(df), solve_model2(df)]
+    if any(df_opt is None for df_opt in df_opts):     # どちらかのモデルが解けなかったら
+        return (None, None), (None, None)
 
     # 最適化の結果に基づいたスケジュールの立案
-    df_schedule = construct_schedule(df_opt)
+    df_schedules = [construct_schedule(df_opt) for df_opt in df_opts]
 
-    return df_opt, df_schedule
+    return df_opts, df_schedules

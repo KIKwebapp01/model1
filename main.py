@@ -7,11 +7,15 @@ from io import BytesIO
 
 
 ### DataFrameからxlsxファイルに変換
-def df_to_xlsx(df_data, df_time):
+def df_to_xlsx(df_datas, df_time):
     byte_xlsx = BytesIO()
     # with pd.ExcelWriter(byte_xlsx, engine="xlsxwriter") as writer:
     with pd.ExcelWriter(byte_xlsx, engine="openpyxl") as writer:
-        df_data.to_excel(writer, sheet_name='data')
+        if type(df_datas) is list:
+            for i, df_data in enumerate(df_datas, start=1):
+                df_data.to_excel(writer, sheet_name='data' + str(i))
+        else:
+            df_datas.to_excel(writer, sheet_name='data')
         df_time.to_excel(writer, sheet_name='setting', index=False)
     return byte_xlsx.getvalue()
 
@@ -92,8 +96,9 @@ def make_schedule():
     # 最適化に使用するデータに限定する
     def create_focused_df(df):
         df_ret = df.copy()
-        df_ret.drop(['大隅前段取', '大隅加工', '納期'], axis=1, inplace=True)  # 不要な列を削除
+        df_ret.drop(['大隅前段取', '大隅加工'], axis=1, inplace=True)  # 不要な列を削除
         df_ret.dropna(subset='自動前段取', inplace=True)  # 自動前段取りに数値が入力済みの行だけ抽出
+        df_ret.sort_values(by='納期', inplace=True)
         return df_ret
 
     st.markdown(
@@ -111,23 +116,31 @@ def make_schedule():
 
     # スケジュール作成実行
     if st.button("スケジュール作成実行"):
-        df_opt, df_schedule = execute_optimization(df_target)
-        if df_opt is None:
+        df_opts, df_schedules = execute_optimization(df_target)
+        if df_opts[0] is None:
             st.write('最適なスケジュールが見つかりませんでした．入力ファイルを確認してください．')
         else:
             st.session_state.is_solved = True
-            st.session_state.df_opt = df_opt
-            st.session_state.df_schedule = df_schedule
+            st.session_state.df_opts = df_opts
+            st.session_state.df_schedules = df_schedules
 
     if st.session_state.is_solved:
-        # 結果の出力
-        df_out = output_schedule(st.session_state.df_opt, st.session_state.df_schedule)
-        st.dataframe(df_out)
+        df_outs = [None, None]
+        df_merges = [None, None]
+        titles = ["A: 仕事完了数の最大化処理", "B: 納期優先処理"]
+        st.markdown("  ")  # 空行
+        for i in range(2):
+            # モデル1の結果の出力
+            num_comp = (df_opts[i]['x'] + df_opts[i]['y'] + df_opts[i]['z']).sum()
+            num_set = ((df_opts[i]['x'] + df_opts[i]['y'] + df_opts[i]['z']) * df_opts[i]['セット数']).sum()
+            st.markdown("##### " + titles[i] + '\u3000' * 5 + str(num_comp) + "作業，" + str(num_set) + "セット")
+            df_outs[i] = output_schedule(st.session_state.df_opts[i], st.session_state.df_schedules[i])
+            st.dataframe(df_outs[i])
+            df_merges[i] = pd.merge(st.session_state.df_data, df_outs[i][['開始時刻', '終了時刻']], on='ID', how='left')
+            st.markdown("  ")       # 空行
         # 結果のダウンロードボタン
-        df_merge = pd.merge(st.session_state.df_data, df_out[['開始時刻', '終了時刻']], on='ID', how='left')
         file_name = 'result-' + datetime.now().strftime('%Y%m%d%H%M%S') + '.xlsx'
-        st.download_button(label="結果のダウンロード", data=df_to_xlsx(df_merge, st.session_state.tt), file_name=file_name)
-
+        st.download_button(label="結果のダウンロード", data=df_to_xlsx(df_datas=df_merges, df_time=st.session_state.tt), file_name=file_name)
 
 
 def change_settings():
@@ -153,7 +166,7 @@ def change_settings():
         for i in range(3):
             with col[i]:
                 for j in range(2):
-                    st.session_state.tt.loc[2*i+j, '時刻'] = st.time_input(labels[2*i+j], st.session_state.tt.loc[2*i+j, '時刻'], step=60)
+                    st.session_state.tt['時刻'][2*i+j] = st.time_input(labels[2*i+j], st.session_state.tt['時刻'][2*i+j], step=60)
     st.dataframe(st.session_state.tt)
 
 
