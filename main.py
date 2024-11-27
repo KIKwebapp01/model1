@@ -28,7 +28,7 @@ def read_data():
     )
     input_mode = st.radio(
         "読込方法を選択：",
-        ('データをアップロードする', 'サンプルデータを読み込む'), horizontal=True
+        ('サンプルデータを読み込む', 'データをアップロードする'), horizontal=True
     )
     if input_mode == 'データをアップロードする':
         input_file = st.file_uploader("Excelファイルをドラッグ＆ドロップ，または[Browse files]から選択してください", type=['xlsx'])
@@ -134,7 +134,7 @@ def make_schedule():
             df_opt = st.session_state.df_opts[i]
             num_comp = (df_opt['x'] + df_opt['y'] + df_opt['z']).sum()
             num_set = ((df_opt['x'] + df_opt['y'] + df_opt['z']) * df_opt['セット数']).sum()
-            st.markdown("##### " + titles[i] + '\u3000' * 5 + str(num_comp) + "作業，" + str(num_set) + "セット")
+            st.markdown("##### " + titles[i] + '\u3000' * 5 + str(int(num_comp)) + "作業，" + str(int(num_set)) + "セット")
             df_outs[i] = output_schedule(df_opt, st.session_state.df_schedules[i])
             st.dataframe(df_outs[i])
             df_merges[i] = pd.merge(st.session_state.df_data, df_outs[i][['開始時刻', '終了時刻']], on='ID', how='left')
@@ -167,7 +167,8 @@ def change_settings():
         for i in range(3):
             with col[i]:
                 for j in range(2):
-                    st.session_state.tt['時刻'][2*i+j] = st.time_input(labels[2*i+j], st.session_state.tt['時刻'][2*i+j], step=60)
+                    # st.session_state.tt['時刻'][2*i+j] = st.time_input(labels[2*i+j], st.session_state.tt['時刻'][2*i+j], step=60)
+                    st.session_state.tt.loc[2 * i + j, '時刻'] = st.time_input(labels[2 * i + j], st.session_state.tt['時刻'][2 * i + j],step=60)
     st.dataframe(st.session_state.tt)
 
 

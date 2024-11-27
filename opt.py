@@ -4,8 +4,8 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 
-TT = [0, 210, 260, 420, 430, 530]  # 各時刻．AM開始，AM終了，PM1開始，PM1終了，PM2開始，PM2終了
-T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))  # 各時間．AM，昼休み，PM1，PM休み，PM2
+# TT = [0, 210, 260, 420, 430, 530]  # 各時刻．AM開始，AM終了，PM1開始，PM1終了，PM2開始，PM2終了
+# T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))  # 各時間．AM，昼休み，PM1，PM休み，PM2
 
 
 ### 前準備
@@ -16,18 +16,18 @@ def preparation():
     TT = [(datetime.combine(today, tt[i]) - datetime.combine(today, tt[0])).seconds // 60 for i in range(6)]
     T = dict(zip([1, 12, 2, 23, 3], [TT[i + 1] - TT[i] for i in range(5)]))
 
+# 変数の値（整数）を返す．実数で格納されているため，誤差対策
+def val(variable):
+    return int(variable.x + 0.1)
 
-##最適化
-def solve_model1(df):
-    def val(variable):
-        return int(variable.x + 0.1)
 
+def solve_base_model(df, determined = dict()):
     # #定数用のデータの作成
     J = df.index
     a, bb, n = df['自動前段取'], df['自動加工'], df['セット数']
     b = {j: bb[j] / n[j] for j in J}
     prioAM, prioToday = df['午前優先'], df['当日優先']
-    alpha = [1000, 100, 0.001]  # 重み．午前優先，当日優先，早く終わる価値
+    alpha = [10000, 1000, 0.001]  # 重み．0:午前優先，1:当日優先，2:早く終わる価値
     # print(f'{J = }')
     # print(f'{a = }')
     # print(f'{b = }')
@@ -52,44 +52,68 @@ def solve_model1(df):
 
     # #制約条件の追加
 
-    # #昼休み終了まで
-    model += xsum(a[j] * x[j] + n[j] * b[j] * (x[j] - v[j]) for j in J) <= T[1]
-    model += xsum(v[j] for j in J) <= 1  # v[j] = 1となる変数は，0個か1個
+    # 仕事そのものの条件
     for j in J:
-        model += v[j] <= x[j]
-        model += t1 <= T[12] * (1 - v[j]) + b[j] * v[j]
-    model += t1 <= T[12]
-    model += T[1] + t1 <= xsum((a[j] + n[j] * b[j]) * x[j] for j in J)
+        model += x[j] + y[j] + z[j] <= 1  # ①：始めるならいずれかの時間帯
+    model += xsum(v[j] for j in J) <= 1  # ②：昼休みにできる仕事（v[j] = 1）は1個まで
+    for j in J:
+        model += v[j] <= x[j]  # ③：昼休みにできる仕事は，AMに始める
+    model += xsum(w[j] for j in J) <= 1  # ④：午後休みにできる仕事（w[j] = 1）は1個まで
+    for j in J:
+        model += 2 * w[j] <= 2 * y[j] + v[j] + xi  # ⑤：午後休みにできる仕事は，午後1に始めた仕事か昼休みから続く（v[j] = 1）仕事
+
+    # #昼休み終了まで
+    model += xsum(a[j] * x[j] + n[j] * b[j] * (x[j] - v[j]) for j in J) <= T[1]  # ⑥：AM中に終わらせる仕事
+    model += t1 <= xsum(a[j] * x[j] + n[j] * b[j] * (x[j] - v[j]) + b[j] * v[j] for j in J) - T[1] * xsum(
+        v[j] for j in J)  # ⑦：昼休み作業時間の上限
+    model += t1 <= T[12] * xsum(v[j] for j in J)  # ⑧：昼休み作業時間の上限
 
     # 午前最後の仕事が，午後1でも終わらない場合の処理．ξ=1となる．
-    model += xsum((a[j] + b[j] * n[j]) * x[j] for j in J) <= T[1] + t1 + T[2] + T[3] * xi
+    model += xsum((a[j] + b[j] * n[j]) * x[j] for j in J) <= T[1] + t1 + T[2] + T[3] * xi  # ⑨：ξフラグ
     for j in J:
-        model += y[j] <= 1 - xi  # ξ=1のときは，午後1に仕事を始めない
-        model += w[j] <= 1 - xi + v[j]  # ただし，v=1の仕事を午後休みに行うのはOK
+        model += y[j] <= 1 - xi  # ⑩：ξ=1のときは，午後1に仕事を始めない
+        model += w[j] <= 1 - xi + v[j]  # ⑪：ただし，v=1の仕事を午後休みに行うのはOK
 
     # #午後1終了まで
-    model += xsum(a[j] * y[j] + n[j] * b[j] * (y[j] - w[j]) for j in J) <= T[2]
-    model += xsum((a[j] + n[j] * b[j]) * x[j] + a[j] * y[j] + n[j] * b[j] * (y[j] - w[j]) for j in J) <= T[1] + t1 + T[
-        2]
-    model += xsum(w[j] for j in J) <= 1  # w[j] = 1となる変数は，0個か1個
-    for j in J:
-        model += w[j] <= y[j] + v[j]  # 午後休みに仕事できるのは，午後1に始めた仕事かv=1の仕事
-        model += t2 <= T[23] * (1 - w[j]) + b[j] * w[j]
-    model += t2 <= T[23]
-    model += T[1] + t1 + T[2] + t2 <= xsum((a[j] + n[j] * b[j]) * (x[j] + y[j]) for j in J)
+    model += xsum(a[j] * (x[j] + y[j]) + n[j] * b[j] * (x[j] + y[j] - w[j]) for j in J) <= T[1] + t1 + T[
+        2]  # ⑫：午後1までに終わらせる
+    model += t1 + t2 <= xsum(a[j] * (x[j] + y[j]) + n[j] * b[j] * (x[j] + y[j] - w[j]) + b[j] * w[j] for j in J) - (
+                T[1] + T[2]) * xsum(w[j] for j in J)
+    # ⑬：午後休み作業時間の上限
+    model += t2 <= T[23] * xsum(w[j] for j in J)  # ⑭：午後休み作業時間の上限
 
     # #終了まで
-    model += xsum((a[j] + n[j] * b[j]) * z[j] for j in J) <= T[3]
-    model += xsum((a[j] + n[j] * b[j]) * (x[j] + y[j] + z[j]) for j in J) <= T[1] + t1 + T[2] + t2 + T[3]
+    # model += xsum((a[j] + n[j] * b[j]) * z[j] for j in J) <= T[3]       # ⑯：午後2で始めた仕事は全部終わらせる
+    model += xsum((a[j] + n[j] * b[j]) * (x[j] + y[j] + z[j]) for j in J) <= T[1] + t1 + T[2] + t2 + T[3]  # ⑮：全部終わらせる
 
-    # ##その他
-    for j in J:
-        model += x[j] + y[j] + z[j] <= 1
+    # 値が決定している変数の設定
+    for j, var_set in determined.items():
+        if 'x' in var_set:      # x[j] = 1 の場合
+            model += x[j] == 1
+            if 'v' in var_set:  # v[j] = 1の場合
+                model += v[j] == 1
+            else:
+                model += v[j] == 0
+            if 'w' in var_set:  # w[j] = 1の場合
+                model += w[j] == 1
+            else:
+                model += w[j] == 0
+        elif 'y' in var_set:    # y[j] = 1の場合
+            model += y[j] == 1
+            if 'w' in var_set:  # w[j] = 1の場合
+                model += w[j] == 1
+            else:
+                model += w[j] == 0
+        elif 'z' in var_set:    # z[j] = 1の場合
+            model += z[j] == 1
 
     # #目的関数の設定
-    model.objective = maximize(xsum(
-        alpha[0] * prioAM[j] * x[j] + (alpha[1] * (prioAM[j] + prioToday[j]) + 1) * (x[j] + y[j] + z[j]) for j in J))
-    # model.write("model.lp")
+    model.objective = (maximize(alpha[0] * xsum(prioAM[j] * x[j] for j in J)
+                                + alpha[1] * xsum(prioToday[j] * (3 * x[j] + 2 * y[j] + z[j]) for j in J)
+                                + xsum(3 * x[j] + 2 * y[j] + z[j] for j in J)
+                                - alpha[2] * (t1 + t2 + xsum(v[j] + w[j] for j in J)))
+                       )
+    model.write("model.lp")
 
     # #最適化の実行
     model.verbose = 0  # 実行過程の非表示
@@ -97,20 +121,42 @@ def solve_model1(df):
 
     # #最適化の結果出力
     if status == OptimizationStatus.OPTIMAL:
-        df['x'] = [val(x[j]) for j in J]
-        df['v'] = [val(v[j]) for j in J]
-        df['y'] = [val(y[j]) for j in J]
-        df['w'] = [val(w[j]) for j in J]
-        df['z'] = [val(z[j]) for j in J]
+        df_ret = df.copy()
+        df_ret.loc[J, 'x'] = [val(x[j]) for j in J]
+        df_ret.loc[J, 'v'] = [val(v[j]) for j in J]
+        df_ret.loc[J, 'y'] = [val(y[j]) for j in J]
+        df_ret.loc[J, 'w'] = [val(w[j]) for j in J]
+        df_ret.loc[J, 'z'] = [val(z[j]) for j in J]
         # print(df)
         # print(f'{val(t1) = }, {val(t2) = }, {val(xi) = }')
-        return df
+        return df_ret
     else:
         # print('最適解が求まりませんでした。')
         return None
 
+##最適化
+def solve_model1(df):
+    return solve_base_model(df)
+
+
 def solve_model2(df):
-    return solve_model1(df)
+    cvt_df = df.copy()
+    cvt_df['納期'] = df['納期'].astype(str)       # 納期情報をdatetime.dateからstrに変換
+    due_list = sorted(set(cvt_df['納期'].tolist()))
+    determined = dict()     # 値が決定した作業の情報
+    df_opt = None
+    for i in range(len(due_list)):
+        target_dues = due_list[:i+1]                # 対象とする納期
+        cur_df = cvt_df[cvt_df['納期'].isin(target_dues)]    # 対象とするデータ（行）
+        df_opt = solve_base_model(cur_df, determined)
+        if df_opt is None:
+            break
+        determined = {j : set() for j in df_opt.index}      # determined[j]: 仕事jで値が1になった変数．value: set型
+        for col in ['x', 'y', 'z', 'v', 'w']:
+            matching_indices = df_opt.index[df_opt[col] == 1].tolist()
+            for j in matching_indices:
+                determined[j].add(col)
+    return df_opt
 
 
 # 時間経過後の時刻を返す関数
@@ -144,12 +190,13 @@ def construct_schedule(df):
         else:
             result["優先"].append('　　')
 
-    print("作成仕事数：", (df['x'] + df['y'] + df['z']).sum())
-    print("作成数量　：", ((df['x'] + df['y'] + df['z']) * df['セット数']).sum())
+    # print("作成仕事数：", (df['x'] + df['y'] + df['z']).sum())
+    # print("作成数量　：", ((df['x'] + df['y'] + df['z']) * df['セット数']).sum())
 
     #仕事一覧とその仕事の開始時刻、終了時刻
     result = {"仕事名": [], "ID": [], "開始時刻": [], "終了時刻": [], "順番": [], "前後": [], "優先": []}
-    d = df.sort_values(by=['午前優先', '当日優先'], ascending=False)
+    # d = df.sort_values(by=['午前優先', '当日優先'], ascending=False)
+    d = df.sort_values(by=['納期', "ID"])
     order = 1
     cur_time = 0
 
@@ -295,6 +342,7 @@ def output_schedule(df_opt, df_schedule):
     df_out['終了時刻'] = df_out['終了時刻'].apply(lambda x: x.strftime('%H:%M'))
     df_out = pd.merge(df_opt, df_out, on='ID', how='left')
     df_out.drop(columns=['x', 'v', 'y', 'w', 'z'], inplace=True)
+    df_out.sort_values(by=['納期', "ID"], inplace=True)
     return df_out
 
 
