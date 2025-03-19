@@ -1,6 +1,8 @@
 from mip import Model, xsum, maximize, OptimizationStatus
 import datetime
 import pandas as pd
+import streamlit as st
+import plotly.express as px
 
 global alpha
 global I_A, I_M1, I_M2, I_M, I
@@ -234,10 +236,10 @@ def execute_optimization(df_data, df_time):
                     break  # 解がないならbreakしてNoneを返す
         if dfs is None:  # 解なし
             return None
-        return {(i, mode): df for (i, df) in dfs.items()}  # キーを作業員 -> (作業員，モデル）に変更
+        return dfs  # 各作業員の最適化の結果．キーが作業員
 
     ### 最適化の結果から，生産時間を算出
-    def construct_schedule(dfs_sol, df_data):
+    def construct_schedule(dfs_sol, df_data):   # dfs_sol: 各作業員の最適化結果（モデル情報はない）
         # 1つの仕事の開始・終了時刻を計算し，resultに書き込み，cur_timeを更新
         # row: 行データ，t：作業時間，ty：タイプ（Before/After）, order：通し番号
         def write_job(result, row, i, cur_time, t, ty, order):
@@ -416,16 +418,15 @@ def execute_optimization(df_data, df_time):
 
             return pd.DataFrame(result)
 
-        # 仕事一覧とその仕事の開始時刻、終了時刻
         dfs_schedule = dict()
-        for (i, mode), df_sol in dfs_sol.items():
+        for i, df_sol in dfs_sol.items():   # 各作業員の最適化の結果
             df_cur = pd.merge(df_sol, df_data, on='ID', how='left')  # 最適化の結果と仕事情報を結合
             if i in I_A:
                 df_schedule = construct_op_auto_schedule(df_cur, i)  # 自動機械担当作業員のスケジュール（作業分割考慮）
             else:
                 df_schedule = construct_op_manual_schedule(df_cur, i)  # 手動機械担当作業員のスケジュール（作業分割考慮）
-            dfs_schedule[i, mode] = df_schedule  # 変換後のスケジュールを辞書に格納
-        return dfs_schedule
+            dfs_schedule[i] = df_schedule     # 変換後のスケジュールを辞書に格納
+        return dfs_schedule     # 各作業員のスケジュール（モデル情報はない）
 
     # 初期設定
     preparation(df_data, df_time)
@@ -433,37 +434,93 @@ def execute_optimization(df_data, df_time):
     # 最適化の実行
     dfs_schedule = dict()
     for mode in [1, 2]:
-        dfs_sol = solve_model(mode)  # 各モデルでの最適化を実行．作業員ごとの割当結果(df)を得る．キー:(作業員，モデル)
+        dfs_sol = solve_model(mode)  # 各モデルでの最適化を実行．作業員ごとの割当結果(df)を得る．キー:作業員
         if dfs_sol is None:
             dfs_schedule = None     # 最適解が見つからなければ，Noneを返す
             break
         # ガントチャート用のスケジュール(df)に変換．セット分割や休憩分割対応
-        dfs_schedule_cur = construct_schedule(dfs_sol, df_data)     # キー：(作業員, モデル)
-        dfs_schedule.update(dfs_schedule_cur)  # 辞書を結合
-    return dfs_schedule     # 作業員・モデルごとのスケジュール(df)
+        dfs_schedule[mode] = construct_schedule(dfs_sol, df_data)   # モデルmodeでの各作業員のスケジュール
+    return dfs_schedule     # モデルごと，作業員ごとのスケジュール(df)．2次元辞書
+
+# ## ガントチャートを作成する
+def create_gantt_charts(dfs_schedule):  # dfs_schedule：作業員・モデルごとのdf
+    # #ガントチャートの描画関数
+    def create_gantt_chart(df):
+        color_scale = {
+            "Before": "rgb(255,153,178)",  # 前段取の色を赤に設定
+            "After": "rgb(153,229,255)"  # 加工の色を青に設定
+        }
+
+        fig = px.timeline(df, x_start="開始時刻", x_end="終了時刻", y="順番", color="前後", color_discrete_map=color_scale)
+        fig.update_traces(marker=dict(line=dict(width=1, color='black')), selector=dict(type='bar'))  # 棒の輪郭を黒線で付ける
+        fig.update_yaxes(autorange="reversed")  # 縦軸を降順に変更
+        # fig.update_traces(textposition='inside', insidetextanchor='middle') # px.timelineの引数textを置く位置を内側の中央に変更
+
+        # ラベルを手動で配置するためのannotationsを作成
+        annotations = []
+        for row in df.itertuples():
+            # 仕事IDを棒の左側に配置
+            if row.前後 == "Before":
+                id_text = f'<b>{row.ID}</b>' if pd.notna(row.優先) else str(row.ID)
+                annotation_work_id = dict(
+                    x=row.開始時刻 + datetime.timedelta(minutes=-7), y=row.順番,
+                    text=id_text, showarrow=False
+                )
+                annotations.append(annotation_work_id)
+
+            # 作業時間を棒の中央に配置
+            annotation_work_time = dict(
+                x=row.開始時刻 + (row.終了時刻 - row.開始時刻) / 2, y=row.順番,   # datetime同志の加算は不可．datetime + timedeltaは〇
+                text=str((row.終了時刻 - row.開始時刻).seconds // 60), showarrow=False,
+                font=dict(size=10)
+            )
+            annotations.append(annotation_work_time)
+        fig.update_layout(annotations=annotations)  # annotationsを設定
+
+        # # 昼休みなどの時間に縦線を付ける
+        max_y = len(set(df['ID'].to_list())) + 0.5      # IDの個数
+        today = pd.Timestamp.today().normalize()        # 本日の時刻0:00
+        for row in st.session_state.df_time.itertuples():
+            x = pd.Timestamp.combine(today, row.時刻)
+            fig.add_shape(
+                dict(
+                    type="line",
+                    x0=x, x1=x, y0=0.5, y1=max_y,
+                    line=dict(color="red", width=1)
+                )
+            )
+        fig.update_layout(title_font_size=20)
+        # fig.show()        # Google Colabではこちら
+        return fig
+
+    gantt_charts = dict()
+    for mode, dfs_schedule_mode in dfs_schedule.items():  # モデル順に実行
+        gantt_charts_mode = dict()
+        for i, df_schedule in dfs_schedule_mode.items():     # 各作業員のスケジュール
+            gantt_charts_mode[i] = create_gantt_chart(df_schedule)  # ガントチャートの作成
+        gantt_charts[mode] = gantt_charts_mode
+    return gantt_charts     # モデルごと，作業員ごとのガントチャート
 
 # ## 最適なスケジュールを表形式に要約する
 def summarize_schedule(dfs_schedule, df_data):
     # 作業員・モデルごとのガントチャート用df（セット分割・休憩分割）-> 割当表dfに変換
-    dfs_summarized = dict()
-    for (i, mode), df_schedule in dfs_schedule.items():
-        df_cur = df_schedule.copy()
-        df_cur.drop(columns=['仕事名', '順番', '前後', '優先'], inplace=True)    # 不要な列を削除
-        df_min = df_cur.groupby('ID')['開始時刻'].min()     # 行:ID，列:開始時刻の最小値．1列
-        df_max = df_cur.groupby('ID')['終了時刻'].max()     # 行:ID，列:終了時刻の最大値．1列
-        df_cur = pd.concat([df_min, df_max], axis=1)       # 上の2つの列を横方向に結合
-        df_cur.columns = ['開始', '終了']                   # 列名の変更
-        df_cur['開始'] = df_cur['開始'].apply(lambda x: x.strftime('%H:%M'))    # 表示形式の変更
-        df_cur['終了'] = df_cur['終了'].apply(lambda x: x.strftime('%H:%M'))    # 表示形式の変更
-        df_cur.columns = [f'開始{mode}', f'終了{mode}']
-        df_cur[f'担当{mode}'] = [f'作業員{i}'] * len(df_cur)
-        if mode not in dfs_summarized:     # 初めて作業員iを登録するなら
-            dfs_summarized[mode] = df_cur                                     # 新規登録
-        else:
-            dfs_summarized[mode] = pd.concat([dfs_summarized[mode], df_cur])    # 既存のdfに縦方向に追加
     df_summarized = df_data.copy()
-    for df_cur in dfs_summarized.values():
-        df_summarized = pd.merge(df_summarized, df_cur, on='ID', how='left')    # 仕事データに各モデルでの割付結果列を追加
+    for mode, dfs_schedule_mode in dfs_schedule.items():
+        dfs_summarized = []
+        for i, df_schedule in dfs_schedule_mode.items():
+            df_cur = df_schedule.copy()
+            df_cur.drop(columns=['仕事名', '順番', '前後', '優先'], inplace=True)    # 不要な列を削除
+            df_min = df_cur.groupby('ID')['開始時刻'].min()     # 行:ID，列:開始時刻の最小値．1列
+            df_max = df_cur.groupby('ID')['終了時刻'].max()     # 行:ID，列:終了時刻の最大値．1列
+            df_cur = pd.concat([df_min, df_max], axis=1)       # 上の2つの列を横方向に結合
+            df_cur.columns = ['開始', '終了']                   # 列名の変更
+            df_cur['開始'] = df_cur['開始'].apply(lambda x: x.strftime('%H:%M'))    # 表示形式の変更
+            df_cur['終了'] = df_cur['終了'].apply(lambda x: x.strftime('%H:%M'))    # 表示形式の変更
+            df_cur.columns = [f'開始{mode}', f'終了{mode}']
+            df_cur[f'担当{mode}'] = [f'作業員{i}'] * len(df_cur)
+            dfs_summarized.append(df_cur)   # 各作業員の割当表をリストに追加
+        df_summarized_mode = pd.concat(dfs_summarized)    # 各作業員の割当を縦方向に結合
+        df_summarized = pd.merge(df_summarized, df_summarized_mode, on='ID', how='left')    # 仕事データに各モデルでの割付結果列を追加
     return df_summarized
 
 # ## モデルごとの結果の比較表を作成する
