@@ -1,25 +1,26 @@
 import streamlit as st
 import pandas as pd
 import os
-from opt import execute_optimization, output_schedule
-from datetime import datetime
+import datetime
 from io import BytesIO
+import plotly.express as px
+from opt import execute_optimization, summarize_schedule, output_table, add_minutes_to_datetime
 
 
 ### DataFrameからxlsxファイルに変換
-def df_to_xlsx(df_datas, df_time):
+def df_to_xlsx(df_data, df_time):
     byte_xlsx = BytesIO()
     # with pd.ExcelWriter(byte_xlsx, engine="xlsxwriter") as writer:
     with pd.ExcelWriter(byte_xlsx, engine="openpyxl") as writer:
-        if type(df_datas) is list:
-            for i, df_data in enumerate(df_datas, start=1):
-                df_data.to_excel(writer, sheet_name='data' + str(i))
+        if type(df_data) is list:
+            for i, df_cur in enumerate(df_data, start=1):
+                df_cur.to_excel(writer, sheet_name='data' + str(i))
         else:
-            df_datas.to_excel(writer, sheet_name='data')
+            df_data.to_excel(writer, sheet_name='data')
         df_time.to_excel(writer, sheet_name='setting', index=False)
     return byte_xlsx.getvalue()
 
-
+### ページ1：データ読込
 def read_data():
     st.markdown(
         """
@@ -43,7 +44,7 @@ def read_data():
             df_data['納期'] = pd.to_datetime(df_data['納期']).dt.date
             st.session_state.df_data = df_data
             st.session_state.df_time = df_time
-            st.session_state.tt = df_time
+            # st.session_state.tt = df_time
             st.session_state.is_loaded = True
             st.session_state.is_solved = False
     else:
@@ -70,7 +71,7 @@ def read_data():
                     df_data['納期'] = pd.to_datetime(df_data['納期']).dt.date
                     st.session_state.df_data = df_data
                     st.session_state.df_time = df_time
-                    st.session_state.tt = df_time
+                    # st.session_state.tt = df_time
                     st.session_state.is_loaded = True
                     st.session_state.is_solved = False
             with col[2]:
@@ -83,7 +84,7 @@ def read_data():
                     st.write('サンプルファイルに誤りがあります．別のファイルを選択してください．')
                     return -1
                 file_name = input_file
-                st.download_button(label="サンプルファイルのダウンロード",
+                st.download_button(label="📥 サンプルファイルのダウンロード",
                                data=df_to_xlsx(df_data, df_time), file_name=file_name)
 
     if st.session_state.is_loaded:
@@ -91,15 +92,70 @@ def read_data():
         st.dataframe(st.session_state.df_data)   # 読み込んだDataFrameを表示
         st.dataframe(st.session_state.df_time)
 
-
+### ページ2：スケジュール作成
 def make_schedule():
-    # 最適化に使用するデータに限定する
-    def create_focused_df(df):
-        df_ret = df.copy()
-        df_ret.drop(['大隅前段取', '大隅加工'], axis=1, inplace=True)  # 不要な列を削除
-        df_ret.dropna(subset='自動前段取', inplace=True)  # 自動前段取りに数値が入力済みの行だけ抽出
-        df_ret.sort_values(by='納期', inplace=True)
-        return df_ret
+    def output_schedule(dfs_schedule):  # dfs：作業員・モデルごとのdf
+        # #ガントチャートの描画関数
+        def draw_schedule(df):
+            color_scale = {
+                "Before": "rgb(255,153,178)",  # 前段取の色を赤に設定
+                "After": "rgb(153,229,255)"  # 加工の色を青に設定
+            }
+
+            fig = px.timeline(df, x_start="開始時刻", x_end="終了時刻", y="順番", color="前後", color_discrete_map=color_scale)
+            fig.update_traces(marker=dict(line=dict(width=1, color='black')), selector=dict(type='bar'))  # 棒の輪郭を黒線で付ける
+            fig.update_yaxes(autorange="reversed")  # 縦軸を降順に変更
+            # fig.update_traces(textposition='inside', insidetextanchor='middle') # px.timelineの引数textを置く位置を内側の中央に変更
+
+            # ラベルを手動で配置するためのannotationsを作成
+            annotations = []
+            for row in df.itertuples():
+                # 仕事IDを棒の左側に配置
+                if row.前後 == "Before":
+                    id_text = f'<b>{row.ID}</b>' if pd.notna(row.優先) else str(row.ID)
+                    annotation_work_id = dict(
+                        x=row.開始時刻 + datetime.timedelta(minutes=-7), y=row.順番,
+                        text=id_text, showarrow=False
+                    )
+                    annotations.append(annotation_work_id)
+
+                # 作業時間を棒の中央に配置
+                annotation_work_time = dict(
+                    x=row.開始時刻 + (row.終了時刻 - row.開始時刻) / 2, y=row.順番,   # datetime同志の加算は不可．datetime + timedeltaは〇
+                    text=str((row.終了時刻 - row.開始時刻).seconds // 60), showarrow=False,
+                    font=dict(size=10)
+                )
+                annotations.append(annotation_work_time)
+            fig.update_layout(annotations=annotations)  # annotationsを設定
+
+            # # 昼休みなどの時間に縦線を付ける
+            max_y = len(set(df['ID'].to_list())) + 0.5      # IDの個数
+            today = pd.Timestamp.today().normalize()        # 本日の時刻0:00
+            for row in st.session_state.df_time.itertuples():
+                x = pd.Timestamp.combine(today, row.時刻)
+                fig.add_shape(
+                    dict(
+                        type="line",
+                        x0=x, x1=x, y0=0.5, y1=max_y,
+                        line=dict(color="red", width=1)
+                    )
+                )
+            fig.update_layout(title_font_size=20)
+            # fig.show()        # Google Colabではこちら
+            st.plotly_chart(fig, theme=None)  # theme=None: デザインをstreamlit版にしない
+
+        # ガントチャート描画
+        key_dic = dict()        # キー：モデル，値：作業員リスト
+        for (i, mode) in dfs_schedule:
+            if mode in key_dic:
+                key_dic[mode].append(i)
+            else:
+                key_dic[mode] = [i]
+        for mode in sorted(key_dic.keys()):     # モデル順をソート
+            st.markdown(f'##### モデル{mode}')
+            for i in sorted(key_dic[mode]):     # 作業員をソート
+                st.write(f'作業員{i}のスケジュール')
+                draw_schedule(dfs_schedule[i, mode])        # ガントチャートの表示
 
     st.markdown(
         """
@@ -110,40 +166,37 @@ def make_schedule():
         st.write("まず，データを読み込んで下さい．")
         return
 
-    df_target = create_focused_df(st.session_state.df_data)     # 最適化に使用するデータに限定する
+    df_data = st.session_state.df_data
+    df_time = st.session_state.df_time
     with st.expander(f"読込データ:（折り畳みを解除して確認できます）"):
-        st.dataframe(df_target)
+        st.dataframe(df_data)
+        st.dataframe(df_time)
 
     # スケジュール作成実行
     if st.button("スケジュール作成実行"):
-        df_opts, df_schedules = execute_optimization(df_target)
-        if df_opts[0] is None:
+        # 各モデル，各作業員のスケジュールを立案する
+        dfs_schedule = execute_optimization(df_data, df_time)   # 各作業員・モデルのスケジュール(df)
+        if dfs_schedule is None:
             st.write('最適なスケジュールが見つかりませんでした．入力ファイルを確認してください．')
         else:
             st.session_state.is_solved = True
-            st.session_state.df_opts = df_opts
-            st.session_state.df_schedules = df_schedules
+            st.session_state.dfs_schedule = dfs_schedule    # ガントチャート表示用df
+            st.session_state.df_summarized = summarize_schedule(dfs_schedule, df_data) # 割当結果表df
+            st.session_state.df_table = output_table(st.session_state.df_summarized, df_data) # モデルの比較表
 
     if st.session_state.is_solved:
-        df_outs = [None, None]
-        df_merges = [None, None]
-        titles = ["A: 仕事完了数の最大化処理", "B: 納期優先処理"]
-        st.markdown("  ")  # 空行
-        for i in range(2):
-            # モデル1の結果の出力
-            df_opt = st.session_state.df_opts[i]
-            num_comp = (df_opt['x'] + df_opt['y'] + df_opt['z']).sum()
-            num_set = ((df_opt['x'] + df_opt['y'] + df_opt['z']) * df_opt['セット数']).sum()
-            st.markdown("##### " + titles[i] + '\u3000' * 5 + str(int(num_comp)) + "作業，" + str(int(num_set)) + "セット")
-            df_outs[i] = output_schedule(df_opt, st.session_state.df_schedules[i])
-            st.dataframe(df_outs[i])
-            df_merges[i] = pd.merge(st.session_state.df_data, df_outs[i][['開始時刻', '終了時刻']], on='ID', how='left')
-            st.markdown("  ")       # 空行
+        # ガントチャートの出力
+        output_schedule(st.session_state.dfs_schedule)
+        st.write('割当結果')
+        st.dataframe(st.session_state.df_summarized)
+        st.write('モデルの比較')
+        st.dataframe(st.session_state.df_table)
+
         # 結果のダウンロードボタン
-        file_name = 'result-' + datetime.now().strftime('%Y%m%d%H%M%S') + '.xlsx'
-        st.download_button(label="結果のダウンロード", data=df_to_xlsx(df_datas=df_merges, df_time=st.session_state.tt), file_name=file_name)
+        file_name = 'result-' + datetime.datetime.now().strftime('%Y%m%d%H%M%S') + '.xlsx'
+        st.download_button(label="📥 結果のダウンロード", data=df_to_xlsx(df_data=st.session_state.df_summarized, df_time=st.session_state.df_time), file_name=file_name)
 
-
+### ページ3：設定変更
 def change_settings():
     st.markdown(
         """
@@ -155,23 +208,23 @@ def change_settings():
         return
 
     with st.container():
+        st.dataframe(st.session_state.df_time)
         col = st.columns(3, vertical_alignment='center')
         with col[0]:
             st.write('各時刻の設定')
         with col[2]:
-            file_name = 'setting-' + datetime.now().strftime('%Y%m%d%H%M%S') + '.xlsx'
-            st.download_button(label="設定値のダウンロード", data=df_to_xlsx(st.session_state.df_data, st.session_state.tt), file_name=file_name)
+            file_name = 'setting-' + datetime.datetime.now().strftime('%Y%m%d%H%M%S') + '.xlsx'
+            st.download_button(label="📥 設定値のダウンロード", data=df_to_xlsx(st.session_state.df_data, st.session_state.df_time), file_name=file_name)
 
         col = st.columns(3)
         labels = ['AM開始時刻', 'AM終了時刻', 'PM1開始時刻', 'PM1終了時刻', 'PM2開始時刻', 'PM2終了時刻']
         for i in range(3):
             with col[i]:
                 for j in range(2):
-                    # st.session_state.tt['時刻'][2*i+j] = st.time_input(labels[2*i+j], st.session_state.tt['時刻'][2*i+j], step=60)
-                    st.session_state.tt.loc[2 * i + j, '時刻'] = st.time_input(labels[2 * i + j], st.session_state.tt['時刻'][2 * i + j],step=60)
-    st.dataframe(st.session_state.tt)
+                    st.session_state.df_time.loc[2 * i + j, '時刻'] = st.time_input(labels[2 * i + j], st.session_state.df_time['時刻'][2 * i + j], step=60)
+    st.dataframe(st.session_state.df_time)
 
-
+### メインプログラム
 def main():
     # 画面全体の設定
     st.set_page_config(
@@ -188,7 +241,6 @@ def main():
     with tab1:  read_data()
     with tab2:  make_schedule()
     with tab3:  change_settings()
-
 
 if __name__ == "__main__":
     main()
